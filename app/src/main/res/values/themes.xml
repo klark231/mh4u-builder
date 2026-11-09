@@ -1,0 +1,7 @@
+<resources>
+    <style name="Theme.MH4UBuilder" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/window_bg</item>
+    </style>
+    <color name="window_bg">#FFF8F5</color>
+    <color name="ic_launcher_background">#6D3900</color>
+</resources>
