@@ -581,6 +581,7 @@ def main(argv=None) -> int:
             print(f"  the code mod changes {len(extra_code)} stretches of the read-only data that may hold code: "
                   "recompiled where the code reaches them")
     img = Image(code, run_header.text.address, size, extra_code)
+    img.interpret_outside = changes_code     # a code mod's branches into its cave in the data segment
     entries, hooks, tunables = translate_tables(
         version or {}, recompile.load_entries(args.functions, [args.extra] if args.extra else []),
         recompile.load_hooks(args.hooks), recompile.load_tunables(args.tunables))
