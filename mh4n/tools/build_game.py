@@ -351,32 +351,82 @@ def match_layout(header: exh.ExHeader, versions_path: str | None = None) -> str 
 
 
 def map_to_mod(dump_header: exh.ExHeader, dump_code: bytes, mod_header: exh.ExHeader, mod_code: bytes,
-               functions_path: str) -> "version_map.Shifts":
+               functions_path: str, hooks: dict, tunables: dict) -> tuple["version_map.Shifts", dict, dict]:
     """Where the target version's functions (the tables' addresses) are in a code mod that replaces the
     whole code.bin (another version of the game, patched): tools/version_map.py's matching, run
     between the dump's code and the mod's. Only .text moves; the read-only data and data keep their
-    addresses, as the tables expect."""
+    addresses, as the tables expect.
+
+    A hook or tunable in a function the mod changed has no exact twin: it is looked for by similarity in
+    the gap its mapped neighbours leave (version_map.rescue). Returns the shifts, {hook: (address, match)}
+    and {tunable: address} for what was found that way."""
     src = version_map.Image(dump_header.text.address, dump_code, dump_header.text.address + dump_header.text.size)
     dst = version_map.Image(mod_header.text.address, mod_code, mod_header.text.address + mod_header.text.size)
-    shifts, report = version_map.build_shifts(src, dst, version_map.load_functions(functions_path))
+    funcs = version_map.load_functions(functions_path)
+    shifts, report = version_map.build_shifts(src, dst, funcs)
     print(f"  mapped {report['mapped']}/{report['functions']} of the game's functions into the mod's code "
           f"({report['intervals']} intervals, {report['cross_checked']} branches/pointers cross-checked)")
-    return shifts
+    mapped = report["mapped_map"]
+    ordered = sorted(funcs, key=lambda f: f.addr)
+    starts = [f.addr for f in ordered]
+    lost_hooks = [a for a in hooks if shifts.translate(a) is None]
+    owner = {}      # tunable -> the start of the function it is in
+    for a in tunables:
+        if shifts.translate(a) is None:
+            g = version_map._containing(ordered, starts, a)
+            if g is not None and g.addr not in mapped:
+                owner[a] = g.addr
+    wanted = sorted(set(lost_hooks) | set(owner.values()))
+    found = version_map.rescue(src, dst, funcs, mapped, wanted) if wanted else {}
+    rescued_hooks = {a: found[a] for a in lost_hooks if a in found}
+    rescued_tunables = {}
+    for a, start in owner.items():
+        if start not in found:
+            continue
+        guess = found[start][0] + (a - start)
+        # the function may have changed size before the instruction: the best place for its neighbourhood
+        want = version_map._masked(src.code, a - src.base - 12, 6, False)
+        best, best_at = -1, guess
+        for delta in range(-0x80, 0x81, 4):
+            at = guess + delta
+            o = at - dst.base - 12
+            if o < 0 or o + 24 > len(dst.code):
+                continue
+            hit = sum(x == y for x, y in zip(want, version_map._masked(dst.code, o, 6, False)))
+            if hit > best or (hit == best and abs(delta) < abs(best_at - guess)):
+                best, best_at = hit, at
+        rescued_tunables[a] = best_at
+    return shifts, rescued_hooks, rescued_tunables
 
 
-def translate_with(shifts: "version_map.Shifts", entries: dict, hooks: dict, tunables: dict) -> tuple[dict, dict, dict]:
-    """The tables at the mod's addresses. A hook or tunable the mod moved out of reach is dropped with a
-    warning (the mod changed that code); the build goes on without it."""
+def translate_with(shifts: "version_map.Shifts", entries: dict, hooks: dict, tunables: dict,
+                   rescued_hooks: dict | None = None, rescued_tunables: dict | None = None
+                   ) -> tuple[dict, dict, dict]:
+    """The tables at the mod's addresses. What the exact match could not place is taken from the
+    similarity search; a hook or tunable that is still out of reach is dropped with a warning (the mod
+    changed that code); the build goes on without it."""
+    rescued_hooks, rescued_tunables = rescued_hooks or {}, rescued_tunables or {}
+    modes = entries      # address -> "arm" / "thumb"
     entries, dropped = shifts.translate_keys(entries)
-    hooks, missing_hooks = shifts.translate_keys(hooks)
-    tunables, missing_tunables = shifts.translate_keys(tunables)
+    new_hooks, missing_hooks = shifts.translate_keys(hooks)
+    new_tunables, missing_tunables = shifts.translate_keys(tunables)
     print(f"  addresses mapped into the mod's code: {len(entries)} entry points "
           f"({len(dropped)} in code the mod changed, left to the analysis)")
     for a in missing_hooks:
-        print(f"  warning: hook 0x{a:08x} not found in the mod's code: left out")
+        if a in rescued_hooks:
+            at, score = rescued_hooks[a]
+            new_hooks[at] = hooks[a]
+            entries.setdefault(at, modes.get(a, "arm"))
+            print(f"  hook 0x{a:08x} found by similarity at 0x{at:08x} ({score:.0%} of the code matches)")
+        else:
+            print(f"  warning: hook 0x{a:08x} not found in the mod's code: left out")
     for a in missing_tunables:
-        print(f"  warning: tunable 0x{a:08x} not found in the mod's code: left out")
-    return entries, hooks, tunables
+        if a in rescued_tunables:
+            new_tunables[rescued_tunables[a]] = tunables[a]
+            print(f"  tunable 0x{a:08x} found by similarity at 0x{rescued_tunables[a]:08x}")
+        else:
+            print(f"  warning: tunable 0x{a:08x} not found in the mod's code: left out")
+    return entries, new_hooks, new_tunables
 
 
 def main(argv=None) -> int:
@@ -536,8 +586,10 @@ def main(argv=None) -> int:
         recompile.load_hooks(args.hooks), recompile.load_tunables(args.tunables))
     if own_layout:
         # the tables hold the target version's addresses: find them in the mod's own code
-        shifts = map_to_mod(header, unmodded_code, run_header, code, args.functions)
-        entries, hooks, tunables = translate_with(shifts, entries, hooks, tunables)
+        shifts, rescued_hooks, rescued_tunables = map_to_mod(header, unmodded_code, run_header, code,
+                                                              args.functions, hooks, tunables)
+        entries, hooks, tunables = translate_with(shifts, entries, hooks, tunables,
+                                                  rescued_hooks, rescued_tunables)
     segs = [(run_header.ro.address, run_header.ro.size), (run_header.data.address, run_header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
                               hooks=hooks, tunables=tunables, log=lambda m: print(m, flush=True))
