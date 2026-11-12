@@ -17,8 +17,8 @@ import java.util.zip.ZipInputStream
 
 object Files {
     private val TITLE_DIRS = setOf("0004000000126300", "0004000e00126300")
-    // same lookup as code_mods.find_mods
-    private val MOD_FILES = listOf("exefs/code.bin", "code.bin", "exefs/code.ips", "exefs/code.bps", "code.ips", "code.bps")
+    // same lookup as code_mods.find_mods (and find_exheader: a whole-code mod brings its own exheader.bin)
+    private val MOD_FILES = listOf("exefs/code.bin", "code.bin", "exefs/code.ips", "exefs/code.bps", "code.ips", "code.bps", "exheader.bin")
 
     fun hasAllFiles(ctx: Context): Boolean =
         if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
