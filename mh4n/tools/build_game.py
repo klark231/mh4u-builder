@@ -66,6 +66,7 @@ import extract_ncch  # noqa: E402
 import mods  # noqa: E402
 import pica_native  # noqa: E402
 import recompile  # noqa: E402
+import guest_map  # noqa: E402
 import version_map  # noqa: E402
 from recomp import build as rbuild  # noqa: E402
 from recomp.analysis import Image  # noqa: E402
@@ -78,7 +79,8 @@ ID_FILES = ["tools/recompile.py", "tools/build_function_table.py", "tools/recomp
             "tools/recomp/runtime/recomp.h", "tools/recomp/runtime/rc_dll.c", "tools/recomp/runtime/android/fenv.h",
             "tools/recomp/runtime/android/math.h", "tools/recomp/runtime/android/string.h", "config/functions.tsv",
             "tools/pica_native.py", "tools/romfs_image.py", "tools/recomp/runtime/pica_native.h",
-            "config/extra_entries.txt", "config/hooks.txt", "config/tunables.txt"]
+            "config/extra_entries.txt", "config/hooks.txt", "config/tunables.txt",
+            "config/guest_addrs.txt", "tools/guest_map.py"]
 
 
 def code_library_id(native: bool = True, deterministic: bool = False, root: str = ROOT) -> str:
@@ -587,15 +589,22 @@ def main(argv=None) -> int:
     entries, hooks, tunables = translate_tables(
         version or {}, recompile.load_entries(args.functions, [args.extra] if args.extra else []),
         recompile.load_hooks(args.hooks), recompile.load_tunables(args.tunables))
+    guest = []
     if own_layout:
         # the tables hold the target version's addresses: find them in the mod's own code
+        # the app's own addresses (config/guest_addrs.txt) are looked for like the hooks, and carried in the library
+        guest_wanted = guest_map.load(os.path.join(ROOT, "config", "guest_addrs.txt"))
+        guest_fns = {a: n for a, k, n in guest_wanted if k == "fn"}
         shifts, rescued_hooks, rescued_tunables = map_to_mod(header, unmodded_code, run_header, code,
-                                                              args.functions, hooks, tunables)
+                                                              args.functions, {**guest_fns, **hooks}, tunables)
+        guest, guest_report = guest_map.build(header, unmodded_code, run_header, code, shifts, rescued_hooks,
+                                              guest_wanted)
+        print("\n".join(guest_report))
         entries, hooks, tunables = translate_with(shifts, entries, hooks, tunables,
                                                   rescued_hooks, rescued_tunables)
     segs = [(run_header.ro.address, run_header.ro.size), (run_header.data.address, run_header.data.size)]
     res = recompile.recompile(img, entries, out, data_segments=segs, title_id=program_id,
-                              hooks=hooks, tunables=tunables, log=lambda m: print(m, flush=True))
+                              hooks=hooks, tunables=tunables, guest=guest, log=lambda m: print(m, flush=True))
     print(f"{res['report']['functions']} functions, {res['report']['hook_points']} hook points")
     for p in res["problems"]:
         print(f"  warning: {p}")
