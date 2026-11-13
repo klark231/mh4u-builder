@@ -133,11 +133,12 @@ def _install_caches(build_game, tools_root, work_dir):
     real_recompile = getattr(recompile, "_mh4u_real", recompile.recompile)
     recompile._mh4u_real = real_recompile
 
-    def cached_recompile(img, entries, out, log=print, data_segments=None, title_id=0, hooks=None, tunables=None):
+    def cached_recompile(img, entries, out, log=print, data_segments=None, title_id=0, hooks=None, tunables=None,
+                         guest=None):
         h = hashlib.sha256()
         h.update(tools_id.encode())
         h.update(repr((img.base, img.text_size, img.extra_code, data_segments, title_id, sorted((entries or {}).items()),
-                       sorted((hooks or {}).items()), sorted((tunables or {}).items()))).encode())
+                       sorted((hooks or {}).items()), sorted((tunables or {}).items()), sorted(guest or []))).encode())
         h.update(img.code)
         key = h.hexdigest()
         saved = os.path.join(out, "recompile-cache.json")
@@ -153,7 +154,7 @@ def _install_caches(build_game, tools_root, work_dir):
             pass
         t = time.time()
         res = real_recompile(img, entries, out, log=log, data_segments=data_segments, title_id=title_id,
-                             hooks=hooks, tunables=tunables)
+                             hooks=hooks, tunables=tunables, guest=guest)
         log(f"  recompile took {time.time() - t:.0f}s")
         with open(saved + ".tmp", "w") as f:
             json.dump({"key": key, "report": res["report"], "files": res["files"], "problems": res["problems"]}, f)
